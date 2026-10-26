@@ -232,7 +232,13 @@ def _resolve_sync(video_id: str, quality: str) -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
     except DownloadError as exc:
-        raise RuntimeError(str(exc).split("\n")[0][:400]) from exc
+        text = str(exc).split("\n")[0]
+        lowered = text.lower()
+        if "not a bot" in lowered or "sign in to confirm" in lowered:
+            raise RuntimeError(
+                "YouTube blocked playback. Sign in as the owner and upload a Netscape cookies.txt in Settings."
+            ) from exc
+        raise RuntimeError(text[:400]) from exc
     if info.get("is_live"):
         raise RuntimeError("Live streams are not supported in this version")
     chosen = choose_streams(info.get("formats") or [], quality)

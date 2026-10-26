@@ -1,6 +1,6 @@
 services:
   tesla-media-player:
-    image: ghcr.io/adsouza98/tesla-media-player:0.2.0
+    image: ghcr.io/adsouza98/tesla-media-player:0.2.1
     build: .
     container_name: tesla-media-player
     restart: unless-stopped

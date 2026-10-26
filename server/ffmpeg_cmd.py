@@ -50,7 +50,7 @@ def _input(url: str, headers: str | None, start: float, *, hls: bool = False) ->
     return args
 
 
-def _fmp4_tail(transcode_video: bool, audio_mode: str, scale_height: int | None) -> list[str]:
+def _fmp4_tail(transcode_video: bool, audio_mode: str, scale_height: int | None, *, adts: bool = False) -> list[str]:
     args: list[str] = ["-avoid_negative_ts", "make_zero"]
     if transcode_video:
         vf = "format=yuv420p"
@@ -79,7 +79,11 @@ def _fmp4_tail(transcode_video: bool, audio_mode: str, scale_height: int | None)
     if audio_mode == "aac":
         args += ["-c:a", "aac", "-ac", "2", "-b:a", "160k", "-ar", "48000"]
     elif audio_mode == "copy":
-        args += ["-c:a", "copy", "-bsf:a", "aac_adtstoasc"]
+        args += ["-c:a", "copy"]
+        # ADTS (HLS / MPEG-TS) needs this. MP4 and MKV already carry the
+        # AudioSpecificConfig, and the filter makes ffmpeg abort on those.
+        if adts:
+            args += ["-bsf:a", "aac_adtstoasc"]
     args += [
         "-movflags",
         FMP4_FLAGS,
@@ -103,6 +107,7 @@ def fmp4_command(
     transcode_audio: bool = True,
     scale_height: int | None = None,
     with_audio: bool = True,
+    adts: bool = False,
 ) -> list[str]:
     cmd = _base()
     cmd += _input(video_url, video_headers, start)
@@ -116,7 +121,7 @@ def fmp4_command(
     else:
         cmd += ["-map", "0:v:0"]
         audio_mode = "none"
-    cmd += _fmp4_tail(transcode_video, audio_mode, scale_height)
+    cmd += _fmp4_tail(transcode_video, audio_mode, scale_height, adts=adts)
     return cmd
 
 
@@ -125,7 +130,7 @@ def hls_remux_command(m3u8_url: str, *, headers: str | None = None) -> list[str]
     cmd = _base()
     cmd += _input(m3u8_url, headers, 0, hls=True)
     cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
-    cmd += _fmp4_tail(False, "copy", None)
+    cmd += _fmp4_tail(False, "copy", None, adts=True)
     return cmd
 
 

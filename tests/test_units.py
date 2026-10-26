@@ -5,7 +5,7 @@ os.environ.setdefault("APP_PASSWORD", "test-cabin-password")
 os.environ.setdefault("CONFIG_DIR", os.path.join(os.path.dirname(__file__), "..", "config"))
 
 from server.auth import issue_token, parse_token, password_ok, token_ok
-from server.ffmpeg_cmd import fmp4_command, header_blob
+from server.ffmpeg_cmd import fmp4_command, header_blob, hls_remux_command
 from server.plex import playback_plan
 from server.youtube import choose_streams, thumb_allowed
 
@@ -81,6 +81,9 @@ class CommandTests(unittest.TestCase):
         self.assertIn("frag_keyframe+empty_moov+default_base_moof", cmd)
         self.assertNotIn("gzip", " ".join(cmd))
         self.assertIn("-ss", cmd)
+        self.assertNotIn("aac_adtstoasc", cmd)
+        hls = hls_remux_command("http://plex.local/start.m3u8")
+        self.assertIn("aac_adtstoasc", hls)
 
     def test_auth_roundtrip(self):
         self.assertTrue(password_ok("test-cabin-password"))

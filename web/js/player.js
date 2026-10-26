@@ -102,6 +102,11 @@
 
     stop() {
       this.generation += 1;
+      if (this.ws) {
+        const sock = this.ws;
+        this.ws = null;
+        try { sock.close(); } catch (err) { /* already gone */ }
+      }
       if (this.abort) this.abort.abort();
       this.abort = null;
       if (this.raf) cancelAnimationFrame(this.raf);
@@ -140,7 +145,13 @@
     }
 
     _fail(error) {
-      if (this.hooks.onError) this.hooks.onError(error && error.message ? error.message : String(error));
+      const message = error && error.message ? error.message : String(error);
+      this._status(message);
+      if (this.hooks.onError) this.hooks.onError(message);
+    }
+
+    _status(text) {
+      if (this.hooks.onStatus) this.hooks.onStatus(text || "");
     }
 
     _mediaTime() {
@@ -187,12 +198,78 @@
       this.wallAccum = 0;
       this.pausedAt = null;
       this.fetchDone = false;
+      this.sawMedia = false;
       this.pumpPaused = false;
+      this.held = false;
       this.mp4 = MP4Box.createFile();
       this.mp4.onError = (err) => { if (gen === this.generation) this._fail(err); };
       this.mp4.onReady = (info) => { if (gen === this.generation) this._onReady(info, gen); };
       this.mp4.onSamples = (id, user, samples) => { if (gen === this.generation) this._onSamples(user, samples); };
+      this._status("Starting the stream…");
 
+      if (opts.wsUrl) {
+        const opened = await this._openSocket(opts.wsUrl, gen);
+        if (opened || gen !== this.generation) return;
+      }
+      await this._openFetch(opts, gen);
+    }
+
+    _openSocket(url, gen) {
+      return new Promise((resolve) => {
+        let sock;
+        let settled = false;
+        const finish = (opened) => {
+          if (settled) return;
+          settled = true;
+          resolve(opened);
+        };
+        try {
+          sock = new WebSocket(url);
+        } catch (err) {
+          finish(false);
+          return;
+        }
+        this.ws = sock;
+        sock.binaryType = "arraybuffer";
+        sock.addEventListener("open", () => {
+          this._status("Buffering…");
+          this._emitState();
+          this._loop(gen);
+          finish(true);
+        });
+        sock.addEventListener("error", () => {
+          if (!settled) {
+            if (this.ws === sock) this.ws = null;
+            finish(false);
+          }
+        });
+        sock.addEventListener("close", () => {
+          if (!settled) {
+            if (this.ws === sock) this.ws = null;
+            finish(false);
+            return;
+          }
+          if (gen !== this.generation) return;
+          this.fetchDone = true;
+          if (!this.sawMedia) this._fail(new Error("Stream ended before playback started"));
+          else this._finishDecoders();
+        });
+        sock.addEventListener("message", (event) => {
+          if (gen !== this.generation) return;
+          if (typeof event.data === "string") {
+            let msg = {};
+            try { msg = JSON.parse(event.data); } catch (err) { return; }
+            if (msg.error) this._fail(new Error(msg.error));
+            return;
+          }
+          this.sawMedia = true;
+          this._append(new Uint8Array(event.data));
+        });
+      });
+    }
+
+    async _openFetch(opts, gen) {
+      this._status("Buffering…");
       let response;
       try {
         response = await fetch(opts.url, { signal: this.abort.signal, credentials: "same-origin" });
@@ -220,6 +297,7 @@
           }
           const { done, value } = await reader.read();
           if (done) break;
+          this.sawMedia = true;
           this._append(value);
         }
       } catch (err) {
@@ -228,6 +306,10 @@
       }
       if (gen !== this.generation) return;
       this.fetchDone = true;
+      this._finishDecoders();
+    }
+
+    _finishDecoders() {
       try { this.mp4.flush(); } catch (err) { /* already flushed */ }
       if (this.vDecoder && this.vDecoder.state === "configured") this.vDecoder.flush().catch(() => {});
       if (this.aDecoder && this.aDecoder.state === "configured") this.aDecoder.flush().catch(() => {});
@@ -302,7 +384,21 @@
         }));
       }
       this.pumpPaused = this.pendingVideo.length > 150;
+      this._flowControl();
       this._pumpDecode();
+    }
+
+    _flowControl() {
+      if (!this.ws || this.ws.readyState !== 1) return;
+      const hold = this.pendingVideo.length > 150;
+      const release = this.pendingVideo.length < 40;
+      if (hold && !this.held) {
+        this.held = true;
+        try { this.ws.send("hold"); } catch (err) { /* socket closing */ }
+      } else if (release && this.held) {
+        this.held = false;
+        try { this.ws.send("go"); } catch (err) { /* socket closing */ }
+      }
     }
 
     _pumpDecode() {
@@ -317,6 +413,7 @@
         }
       }
       if (this.pendingVideo.length < 40) this.pumpPaused = false;
+      this._flowControl();
     }
 
     _scheduleAudio(audioData) {
@@ -357,6 +454,7 @@
             chosen = this.frames.shift();
           }
           if (chosen) {
+            this._status("");
             const frame = chosen.frame;
             const cw = this.canvas.width;
             const ch = this.canvas.height;

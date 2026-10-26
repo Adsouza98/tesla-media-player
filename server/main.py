@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -426,7 +427,7 @@ async def _fmp4_response(cmd: list[str], mode: str, on_close=None):
         async for chunk in iterator:
             yield chunk
 
-    return StreamingResponse(body(), media_type="video/mp4", headers=_stream_headers(mode))
+    return StreamingResponse(body(), media_type="application/octet-stream", headers=_stream_headers(mode))
 
 
 @app.get("/api/youtube/stream/{video_id}")
@@ -546,6 +547,133 @@ async def plex_stream(
         )
     logger.info("plex %s mode=%s quality=%s start=%s", rating_key, resolved["mode"], quality, int(start))
     return await _fmp4_response(cmd, resolved["mode"], on_close=_stop)
+
+
+async def _fmp4_socket(ws: WebSocket, cmd: list[str], on_close=None) -> None:
+    """Push fragmented MP4 over a websocket.
+
+    An HTTP stream sits behind Cloudflare and Nginx until those buffers fill,
+    so the canvas never gets a header. Socket frames are flushed as they exist.
+    The browser sends "hold" / "go" when its decode queue gets ahead.
+    """
+    paused = asyncio.Event()
+    paused.set()
+    stopped = asyncio.Event()
+
+    async def _controls() -> None:
+        try:
+            while True:
+                msg = await ws.receive_text()
+                if msg == "hold":
+                    paused.clear()
+                elif msg == "go":
+                    paused.set()
+        except Exception:
+            stopped.set()
+            paused.set()
+
+    control = asyncio.create_task(_controls())
+    try:
+        async for chunk in iter_ffmpeg(cmd, on_close=on_close, kind="fmp4"):
+            if stopped.is_set():
+                break
+            await paused.wait()
+            if stopped.is_set():
+                break
+            await ws.send_bytes(chunk)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        logger.info("stream closed: %s", _public_error(exc))
+        try:
+            await ws.send_json({"error": _public_error(exc)})
+        except Exception:
+            pass
+    finally:
+        control.cancel()
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/api/ws/youtube/{video_id}")
+async def ws_youtube(
+    ws: WebSocket,
+    video_id: str,
+    quality: str | None = None,
+    start: float = 0,
+):
+    if not _authed(ws):
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    start = max(0.0, min(start, 60 * 60 * 12))
+    try:
+        resolved = await youtube.resolve(video_id, _quality(quality))
+    except Exception as exc:
+        await ws.send_json({"error": _public_error(exc)})
+        await ws.close()
+        return
+    cmd = fmp4_command(
+        resolved["video_url"],
+        resolved.get("audio_url"),
+        video_headers=resolved.get("video_headers"),
+        audio_headers=resolved.get("audio_headers"),
+        start=start,
+        transcode_video=resolved["transcode_video"],
+        transcode_audio=resolved["transcode_audio"],
+        scale_height=resolved.get("scale_height"),
+        with_audio=resolved.get("with_audio", True),
+    )
+    logger.info("youtube %s mode=%s quality=%s start=%s", video_id, resolved["mode"], quality, int(start))
+    await _fmp4_socket(ws, cmd)
+
+
+@app.websocket("/api/ws/plex/{rating_key}")
+async def ws_plex(
+    ws: WebSocket,
+    rating_key: str,
+    quality: str | None = None,
+    start: float = 0,
+    media: int = 0,
+    part: int = 0,
+):
+    if not _authed(ws):
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    start = max(0.0, min(start, 60 * 60 * 12))
+    try:
+        resolved = await plex.resolve(
+            rating_key,
+            quality=_quality(quality),
+            start=start,
+            media_index=max(0, media),
+            part_index=max(0, part),
+        )
+    except plex.PlexError as exc:
+        await ws.send_json({"error": _public_error(exc)})
+        await ws.close()
+        return
+
+    async def _stop():
+        await plex.stop_session(resolved.get("session"))
+
+    if resolved["mode"] == "plex":
+        cmd = hls_remux_command(resolved["m3u8"], headers=resolved.get("video_headers"))
+    else:
+        cmd = fmp4_command(
+            resolved["video_url"],
+            None,
+            video_headers=resolved.get("video_headers"),
+            start=start,
+            transcode_video=False,
+            transcode_audio=resolved["transcode_audio"],
+            with_audio=True,
+        )
+    logger.info("plex %s mode=%s quality=%s start=%s", rating_key, resolved["mode"], quality, int(start))
+    await _fmp4_socket(ws, cmd, on_close=_stop)
 
 
 async def _compat_socket(ws: WebSocket, cmd: list[str], on_close=None) -> None:

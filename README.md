@@ -178,7 +178,7 @@ Node 22 or Deno must be on `PATH` for YouTube extraction outside Docker. The ima
 Published from GitHub Actions to:
 
 ```text
-ghcr.io/adsouza98/tesla-media-player:0.2.0
+ghcr.io/adsouza98/tesla-media-player:0.2.1
 ghcr.io/adsouza98/tesla-media-player:latest
 ```
 

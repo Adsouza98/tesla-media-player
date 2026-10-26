@@ -237,8 +237,11 @@ async def _part(rating_key: str, media_index: int, part_index: int) -> tuple[dic
     return raw, part, info
 
 
-def _plex_headers_blob(token: str) -> str:
-    return header_blob(_headers(token)) or ""
+def _with_token(url: str, token: str) -> str:
+    if not token or "X-Plex-Token=" in url:
+        return url
+    joiner = "&" if "?" in url else "?"
+    return f"{url}{joiner}X-Plex-Token={token}"
 
 
 async def resolve(rating_key: str, *, quality: str, start: float, media_index: int, part_index: int) -> dict:
@@ -248,7 +251,7 @@ async def resolve(rating_key: str, *, quality: str, start: float, media_index: i
     quality = quality if quality in PLEX_LADDER else "1080"
     mode = playback_plan(info, quality)
     base, token = _cfg()
-    headers = _plex_headers_blob(token)
+    headers = header_blob(_headers(token)) or ""
     audio_codec = (info.get("audioCodec") or "").lower()
     aac = audio_codec in {"aac", "mp4a"}
 
@@ -257,7 +260,7 @@ async def resolve(rating_key: str, *, quality: str, start: float, media_index: i
             "mode": "remux",
             "title": info["title"],
             "duration": info["duration"],
-            "video_url": f"{base}{info['partKey']}",
+            "video_url": _with_token(f"{base}{info['partKey']}", token),
             "audio_url": None,
             "video_headers": headers,
             "audio_headers": None,
@@ -301,7 +304,7 @@ async def resolve(rating_key: str, *, quality: str, start: float, media_index: i
         "X-Plex-Version": "0.1.0",
         "X-Plex-Client-Profile-Extra": PROFILE,
     }
-    m3u8 = f"{base}/video/:/transcode/universal/start.m3u8?{urlencode(params)}"
+    m3u8 = _with_token(f"{base}/video/:/transcode/universal/start.m3u8?{urlencode(params)}", token)
     return {
         "mode": "plex",
         "title": info["title"],

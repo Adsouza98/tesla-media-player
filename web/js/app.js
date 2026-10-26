@@ -35,6 +35,10 @@
       document.getElementById("play-toggle").textContent = mode === "paused" ? "Play" : "Pause";
     },
     onError: (message) => toast(message),
+    onStatus: (message) => {
+      const status = document.getElementById("player-status");
+      if (status) status.textContent = message || "";
+    },
     onEnded: () => document.getElementById("play-toggle").textContent = "Play",
   });
 
@@ -452,12 +456,14 @@
     if (source.kind === "youtube") {
       return {
         url: `/api/youtube/stream/${source.id}?quality=${q}&start=${start}`,
+        wsUrl: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws/youtube/${source.id}?quality=${q}&start=${start}`,
         compatUrl: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/compat/youtube/${source.id}?quality=${q}&start=${start}`,
         compat,
       };
     }
     return {
       url: `/api/plex/stream/${source.id}?quality=${q}&start=${start}`,
+      wsUrl: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws/plex/${source.id}?quality=${q}&start=${start}`,
       compatUrl: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/compat/plex/${source.id}?quality=${q}&start=${start}`,
       compat,
     };
@@ -475,6 +481,7 @@
     try {
       await player.play({
         url: built.url,
+        wsUrl: built.wsUrl,
         compatUrl: built.compatUrl,
         compat: built.compat,
         duration: source.duration || 0,
