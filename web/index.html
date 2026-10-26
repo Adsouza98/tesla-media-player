@@ -16,13 +16,28 @@
       <p class="eyebrow">Cabin picture</p>
       <h1>Vela</h1>
       <p class="lede">YouTube and Plex for the passenger screen. The picture is drawn on a canvas, so it keeps playing when the car leaves Park.</p>
+      <div class="auth-block">
+        <button id="plex-start" class="primary wide" type="button">Sign in with Plex</button>
+        <div id="plex-panel" class="plex-panel hidden">
+          <img id="plex-qr" alt="" />
+          <p id="plex-code" class="plex-code" aria-live="polite"></p>
+          <p class="fine">On your phone, open plex.tv/link and enter this code, or scan it. The car never sees your Plex password.</p>
+          <p id="plex-wait" class="fine">Waiting for approval…</p>
+        </div>
+        <a id="google-start" class="btn ghost wide hidden" href="/api/auth/google/start">Sign in with Google</a>
+      </div>
       <form id="lock-form">
+        <div id="user-row" class="hidden">
+          <label for="username">Username</label>
+          <input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="grok" />
+        </div>
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required />
         <button type="submit">Enter</button>
       </form>
+      <button id="toggle-user" class="ghost wide" type="button">Tester sign-in</button>
       <p id="lock-error" class="error" role="alert"></p>
-      <p class="fine">Passenger use only. Video on the driver display while moving is illegal and dangerous.</p>
+      <p class="fine">Passenger use only. Two seats: you, and a Grok test user. Nginx Proxy Manager and Cloudflare only carry the connection. Sign-in lives here.</p>
     </div>
   </section>
 
@@ -36,6 +51,8 @@
         <a href="#/youtube" data-nav="youtube">YouTube</a>
         <a href="#/plex" data-nav="plex">Plex</a>
       </nav>
+      <span id="whoami" class="who"></span>
+      <button id="sign-out" class="ghost" type="button">Sign out</button>
       <button id="open-settings" class="ghost" type="button">Settings</button>
     </header>
     <main id="view"></main>

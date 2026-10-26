@@ -4,7 +4,7 @@ import unittest
 os.environ.setdefault("APP_PASSWORD", "test-cabin-password")
 os.environ.setdefault("CONFIG_DIR", os.path.join(os.path.dirname(__file__), "..", "config"))
 
-from server.auth import issue_token, password_ok, token_ok
+from server.auth import issue_token, parse_token, password_ok, token_ok
 from server.ffmpeg_cmd import fmp4_command, header_blob
 from server.plex import playback_plan
 from server.youtube import choose_streams, thumb_allowed
@@ -88,6 +88,139 @@ class CommandTests(unittest.TestCase):
         token = issue_token()
         self.assertTrue(token_ok(token))
         self.assertFalse(token_ok(token + "x"))
+        self.assertEqual(parse_token(token)[0], "owner")
+
+
+class SeatTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from server import settings
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = settings
+        self.old_dir = settings.CONFIG_DIR
+        settings.CONFIG_DIR = Path(self.tmp.name)
+        self.env_keys = (
+            "OWNER_EMAIL",
+            "OWNER_PLEX_USERNAME",
+            "OWNER_NAME",
+            "TEST_PASSWORD",
+            "TEST_EMAIL",
+            "TEST_PLEX_USERNAME",
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "PUBLIC_URL",
+        )
+        self.old_env = {key: os.environ.get(key) for key in self.env_keys}
+        for key in self.env_keys:
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        self.settings.CONFIG_DIR = self.old_dir
+        for key, value in self.old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp.cleanup()
+
+    def test_only_two_seats_and_passwords(self):
+        from server import users
+        from server.auth import issue_token
+
+        users.ensure_users()
+        owner = users.authenticate(None, "test-cabin-password")
+        self.assertEqual(owner["id"], "owner")
+        self.assertIsNone(users.authenticate("andre", "nope"))
+        self.assertIsNone(users.authenticate("stranger", "test-cabin-password"))
+        hint = users.tester_password_hint()
+        self.assertTrue(hint)
+        tester = users.authenticate("grok", hint)
+        self.assertEqual(tester["role"], "tester")
+        self.assertIsNone(users.match_identity("plex", {"id": 1, "username": "someone", "email": "someone@example.com"}))
+        os.environ["OWNER_EMAIL"] = "owner@example.com"
+        os.environ["OWNER_PLEX_USERNAME"] = "CabinOwner"
+        users.ensure_users()
+        matched = users.match_identity("plex", {"id": 9, "username": "cabinowner", "email": "other@example.com"})
+        self.assertEqual(matched["id"], "owner")
+        saved = users.remember_identity("owner", "plex", {"id": 9, "username": "CabinOwner", "email": "owner@example.com"})
+        self.assertEqual(saved["plex_id"], "9")
+        with self.assertRaises(ValueError):
+            users.update_users([
+                {"id": "owner", "name": "Andre", "username": "andre", "plex_email": "same@example.com", "google_email": "", "plex_username": "", "password": ""},
+                {"id": "grok", "name": "Grok", "username": "grok", "plex_email": "same@example.com", "google_email": "", "plex_username": "", "password": ""},
+            ])
+        users.update_users([
+            {"id": "owner", "name": "Andre", "username": "andre", "plex_email": "owner@example.com", "google_email": "owner@example.com", "plex_username": "CabinOwner", "password": ""},
+            {"id": "grok", "name": "Grok", "username": "grok", "plex_email": "", "google_email": "", "plex_username": "", "password": "grok-test-pass"},
+        ])
+        self.assertIsNone(users.tester_password_hint())
+        self.assertEqual(users.authenticate("grok", "grok-test-pass")["id"], "grok")
+        token = issue_token("grok", users.get_user("grok")["session_version"])
+        self.assertTrue(token_ok(token))
+        users.update_users([
+            {"id": "owner", "name": "Andre", "username": "andre", "plex_email": "owner@example.com", "google_email": "owner@example.com", "plex_username": "CabinOwner", "password": ""},
+            {"id": "grok", "name": "Grok", "username": "grok", "plex_email": "", "google_email": "", "plex_username": "", "password": "another-pass-9"},
+        ])
+        self.assertIsNone(users.user_for_session("grok", parse_token(token)[1]))
+
+    def test_google_state_is_single_use(self):
+        from server import sso
+
+        state = sso.auth.sign_payload({"purpose": "login", "origin": "https://vela.example.com"})
+        self.assertEqual(sso.take_google_state(state)["origin"], "https://vela.example.com")
+        self.assertIsNone(sso.take_google_state(state))
+        self.assertIsNone(sso.take_google_state(state + "x"))
+
+
+class HttpAuthTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from server import main, settings
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.settings = settings
+        self.main = main
+        self.old_dir = settings.CONFIG_DIR
+        settings.CONFIG_DIR = Path(self.tmp.name)
+        main._attempts.clear()
+
+    def tearDown(self):
+        self.settings.CONFIG_DIR = self.old_dir
+        self.main._attempts.clear()
+        self.tmp.cleanup()
+
+    def test_login_me_and_owner_gate(self):
+        from fastapi.testclient import TestClient
+
+        from server import users
+
+        with TestClient(self.main.app) as client:
+            me = client.get("/api/auth/me")
+            self.assertFalse(me.json()["authenticated"])
+            self.assertTrue(me.json()["methods"]["plex"])
+            denied = client.post("/api/auth/login", json={"password": "nope"})
+            self.assertEqual(denied.status_code, 401)
+            signed = client.post("/api/auth/login", json={"password": "test-cabin-password"})
+            self.assertEqual(signed.status_code, 200)
+            self.assertEqual(signed.json()["user"]["role"], "owner")
+            self.assertEqual(client.get("/api/auth/me").json()["user"]["username"], "andre")
+            seats = client.get("/api/auth/users")
+            self.assertEqual(seats.status_code, 200)
+            self.assertEqual(len(seats.json()["users"]), 2)
+            hint = seats.json()["tester_password"]
+            client.post("/api/auth/logout")
+            tester = client.post("/api/auth/login", json={"username": "grok", "password": hint})
+            self.assertEqual(tester.status_code, 200)
+            self.assertEqual(tester.json()["user"]["role"], "tester")
+            self.assertEqual(client.get("/api/settings").status_code, 403)
+            self.assertEqual(client.get("/api/auth/users").status_code, 403)
+            self.assertEqual(client.post("/api/auth/plex/start", json={"link_user": "owner"}).status_code, 401)
+            self.assertIsNone(users.match_identity("google", {"sub": "abc", "email": "nobody@example.com"}))
 
 
 if __name__ == "__main__":

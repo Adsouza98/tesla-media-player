@@ -38,7 +38,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ steps.image.outputs.name }}:0.1.0
+            ${{ steps.image.outputs.name }}:0.2.0
             ${{ steps.image.outputs.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

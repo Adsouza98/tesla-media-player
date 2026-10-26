@@ -16,6 +16,8 @@
     settings: null,
     current: null,
     hideTimer: 0,
+    user: null,
+    plexTimer: 0,
   };
 
   const player = new VelaPlayer.CabinPlayer(canvas, {
@@ -87,14 +89,74 @@
   }
 
   function showLock() {
+    stopPlex();
     lock.classList.remove("hidden");
     shell.classList.add("hidden");
     closePlayer();
   }
 
-  function showShell() {
+  function showShell(user) {
+    if (user) state.user = user;
+    const who = document.getElementById("whoami");
+    if (who) who.textContent = state.user ? state.user.name : "";
     lock.classList.add("hidden");
     shell.classList.remove("hidden");
+    stopPlex();
+  }
+
+  function stopPlex() {
+    clearInterval(state.plexTimer);
+    state.plexTimer = 0;
+  }
+
+  function applyMethods(me) {
+    const google = document.getElementById("google-start");
+    if (google) google.classList.toggle("hidden", !(me && me.methods && me.methods.google));
+  }
+
+  const authErrors = {
+    "not-allowed": "That account is not allowed. Only the owner and the Grok test seat can sign in.",
+    "google-failed": "Google sign-in failed. Try again, or use Plex.",
+    state: "That sign-in expired. Try again.",
+    unconfigured: "Google sign-in is not turned on yet.",
+  };
+
+  function watchPlex(stateId, statusEl, onDone) {
+    stopPlex();
+    const tick = async () => {
+      if (!statusEl.isConnected) {
+        stopPlex();
+        return;
+      }
+      try {
+        const result = await api(`/api/auth/plex/poll?state=${encodeURIComponent(stateId)}`);
+        if (!result || result.status === "pending") return;
+        stopPlex();
+        onDone(result);
+      } catch (err) {
+        if (err.message !== "auth" && statusEl.isConnected) statusEl.textContent = err.message;
+      }
+    };
+    state.plexTimer = setInterval(tick, 2000);
+  }
+
+  async function startPlex(linkUser, panel, statusEl, onDone) {
+    stopPlex();
+    statusEl.textContent = "Asking Plex for a code…";
+    panel.classList.remove("hidden");
+    const body = linkUser ? { link_user: linkUser } : {};
+    const started = await api("/api/auth/plex/start", { method: "POST", body });
+    const code = panel.querySelector("[data-plex-code]") || document.getElementById("plex-code");
+    const qr = panel.querySelector("[data-plex-qr]") || document.getElementById("plex-qr");
+    if (code) code.textContent = started.code || "";
+    if (qr) {
+      if (started.qr) {
+        qr.src = started.qr;
+        qr.classList.remove("hidden");
+      } else qr.classList.add("hidden");
+    }
+    statusEl.textContent = "Waiting for approval…";
+    watchPlex(started.state, statusEl, onDone);
   }
 
   function httpsBanner() {
@@ -208,13 +270,55 @@
     }
   }
 
+  function seatFields(user, googleOn) {
+    const google = googleOn
+      ? `<a class="btn ghost" href="/api/auth/google/start?link_user=${esc(user.id)}">Link Google</a>`
+      : "";
+    return `
+      <fieldset class="seat" data-user="${esc(user.id)}">
+        <legend>${user.role === "owner" ? "Owner" : "Grok test"}</legend>
+        <label>Name<input data-field="name" value="${esc(user.name)}" maxlength="80" /></label>
+        <label>Username<input data-field="username" value="${esc(user.username)}" maxlength="32" autocapitalize="off" spellcheck="false" /></label>
+        <label>Plex username<input data-field="plex_username" value="${esc(user.plex_username)}" autocapitalize="off" spellcheck="false" placeholder="Allowed Plex account" /></label>
+        <label>Plex email<input data-field="plex_email" type="email" value="${esc(user.plex_email)}" autocapitalize="off" spellcheck="false" /></label>
+        <label>Google email<input data-field="google_email" type="email" value="${esc(user.google_email)}" autocapitalize="off" spellcheck="false" /></label>
+        <label>New password<input data-field="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep" /></label>
+        <div class="row-actions">
+          <button type="button" data-link-plex="${esc(user.id)}">Link Plex to this seat</button>
+          ${google}
+        </div>
+      </fieldset>`;
+  }
+
   async function renderSettings() {
+    if (!state.user || state.user.role !== "owner") {
+      view.innerHTML = `
+        <section class="settings">
+          <div><p class="eyebrow">Settings</p><h2>${esc(state.user ? state.user.name : "Seat")}</h2></div>
+          <p class="fine">This seat can play. Plex, YouTube cookies, and who is allowed in stay with the owner.</p>
+          <button id="set-out" type="button">Sign out</button>
+        </section>`;
+      document.getElementById("set-out").addEventListener("click", signOut);
+      return;
+    }
     let current = state.settings;
-    try { current = await api("/api/settings"); state.settings = current; } catch (err) { if (err.message === "auth") return; }
+    let access = { users: [], google: { enabled: false, redirect: "" }, tester_password: null };
+    try {
+      current = await api("/api/settings");
+      state.settings = current;
+      access = await api("/api/auth/users");
+    } catch (err) {
+      if (err.message === "auth") return;
+      view.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      return;
+    }
+    const hint = access.tester_password
+      ? `<p class="fine">Grok test password: <code class="secret">${esc(access.tester_password)}</code>. It is also in the config volume as <code>test-user</code>. Change it below when you are done testing.</p>`
+      : `<p class="fine">The Grok test password is the one you set, or TEST_PASSWORD in the stack. It is not shown again after you change it.</p>`;
     view.innerHTML = `
       <section class="settings">
         <div><p class="eyebrow">Settings</p><h2>Cabin setup</h2></div>
-        <p class="fine">Saved on the server in the config volume. The password itself stays in APP_PASSWORD, not here.</p>
+        <p class="fine">Saved on the server in the config volume. The owner cabin password stays in APP_PASSWORD.</p>
         <label>Plex URL<input id="set-url" type="url" value="${esc(current && current.plex_url || "")}" placeholder="http://192.168.1.42:32400" /></label>
         <label>Plex token<input id="set-token" type="password" placeholder="${current && current.plex_token_set ? "Saved — leave blank to keep" : "Paste token"}" autocomplete="off" /></label>
         <label>Default quality
@@ -223,18 +327,70 @@
         <p class="fine">YouTube cookies: ${current && current.youtube_cookies ? "loaded" : "not loaded"}. Export a Netscape cookies.txt while signed into YouTube Premium, then upload it.</p>
         <label>Cookies file<input id="set-cookies" type="file" accept=".txt,text/plain" /></label>
         <div class="row-actions">
-          <button id="set-save" class="primary" type="button">Save</button>
+          <button id="set-save" class="primary" type="button">Save playback</button>
           <button id="set-plex" type="button">Test Plex</button>
-          <button id="set-out" type="button">Sign out</button>
         </div>
+        <h2>Who can sign in</h2>
+        <p class="fine">Two seats only. Plex sign-in works like Organizr: approve a code on your phone. Google is optional and often fails in the Tesla browser, so use it from a laptop. Until a seat has a Plex username or email, that Plex account cannot get in. Your cabin password still can.</p>
+        ${hint}
+        <div id="seats">${(access.users || []).map((user) => seatFields(user, access.google && access.google.enabled)).join("")}</div>
+        <div id="link-panel" class="plex-panel hidden">
+          <img data-plex-qr alt="" />
+          <p data-plex-code class="plex-code"></p>
+          <p id="link-status" class="fine"></p>
+        </div>
+        <div class="row-actions">
+          <button id="seat-save" class="primary" type="button">Save seats</button>
+        </div>
+        <p class="fine">${access.google && access.google.enabled ? "Google is on." : "Google is off until GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set."} Redirect URI: ${esc(access.google && access.google.redirect || "")}</p>
+        <button id="set-out" type="button">Sign out</button>
         <p id="set-note" class="fine"></p>
       </section>`;
     document.getElementById("set-save").addEventListener("click", saveSettings);
     document.getElementById("set-plex").addEventListener("click", testPlex);
-    document.getElementById("set-out").addEventListener("click", async () => {
-      await api("/api/auth/logout", { method: "POST", body: {} });
-      showLock();
+    document.getElementById("set-out").addEventListener("click", signOut);
+    document.getElementById("seat-save").addEventListener("click", saveSeats);
+    document.getElementById("seats").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-link-plex]");
+      if (!button) return;
+      const panel = document.getElementById("link-panel");
+      const status = document.getElementById("link-status");
+      startPlex(button.dataset.linkPlex, panel, status, (result) => {
+        if (result.status === "linked") {
+          status.textContent = `Linked ${result.user && (result.user.plex_username || result.user.plex_email) ? (result.user.plex_username || result.user.plex_email) : "Plex"}.`;
+          renderSettings();
+          return;
+        }
+        status.textContent = result.detail || "Plex did not link.";
+      }).catch((err) => { if (err.message !== "auth") status.textContent = err.message; });
     });
+  }
+
+  function collectSeats() {
+    return [...document.querySelectorAll(".seat")].map((seat) => {
+      const item = { id: seat.dataset.user };
+      seat.querySelectorAll("[data-field]").forEach((input) => {
+        item[input.dataset.field] = input.value.trim();
+      });
+      return item;
+    });
+  }
+
+  async function saveSeats() {
+    const note = document.getElementById("set-note");
+    try {
+      await api("/api/auth/users", { method: "PUT", body: { users: collectSeats() } });
+      note.textContent = "Seats saved.";
+    } catch (err) {
+      if (err.message !== "auth") note.textContent = err.message;
+    }
+  }
+
+  async function signOut() {
+    stopPlex();
+    await api("/api/auth/logout", { method: "POST", body: {} });
+    state.user = null;
+    showLock();
   }
 
   async function saveSettings() {
@@ -339,17 +495,46 @@
     event.preventDefault();
     const error = document.getElementById("lock-error");
     error.textContent = "";
+    const username = document.getElementById("username").value.trim();
+    const body = { password: document.getElementById("password").value };
+    if (username) body.username = username;
     try {
-      await api("/api/auth/login", { method: "POST", body: { password: document.getElementById("password").value } });
+      const signedIn = await api("/api/auth/login", { method: "POST", body });
       document.getElementById("password").value = "";
-      showShell();
+      showShell(signedIn.user);
       route();
     } catch (err) {
-      error.textContent = err.message === "auth" ? "Wrong password" : err.message;
+      error.textContent = err.message === "auth" ? "Wrong username or password" : err.message;
     }
   });
 
+  document.getElementById("toggle-user").addEventListener("click", () => {
+    const row = document.getElementById("user-row");
+    row.classList.toggle("hidden");
+    document.getElementById("toggle-user").textContent = row.classList.contains("hidden") ? "Tester sign-in" : "Owner password only";
+    if (!row.classList.contains("hidden")) document.getElementById("username").focus();
+  });
+
+  document.getElementById("plex-start").addEventListener("click", () => {
+    const error = document.getElementById("lock-error");
+    error.textContent = "";
+    const panel = document.getElementById("plex-panel");
+    const status = document.getElementById("plex-wait");
+    startPlex(null, panel, status, (result) => {
+      if (result.status === "ok") {
+        showShell(result.user);
+        route();
+        return;
+      }
+      error.textContent = result.detail || "Plex sign-in did not finish.";
+      status.textContent = error.textContent;
+    }).catch((err) => {
+      error.textContent = err.message === "auth" ? "Could not start Plex sign-in" : err.message;
+    });
+  });
+
   document.getElementById("open-settings").addEventListener("click", () => { location.hash = "#/settings"; });
+  document.getElementById("sign-out").addEventListener("click", () => { signOut().catch(() => showLock()); });
   document.getElementById("player-back").addEventListener("click", closePlayer);
   document.getElementById("play-toggle").addEventListener("click", () => player.toggle());
   document.getElementById("skip-back").addEventListener("click", () => {
@@ -428,9 +613,18 @@
   document.getElementById("volume").value = String(state.volume);
   player.setVolume(state.volume / 100);
 
+  const authQuery = new URLSearchParams(location.search);
+  const authNotice = authErrors[authQuery.get("e")] || "";
+  if (authQuery.has("e") || authQuery.has("linked")) {
+    history.replaceState({}, "", location.pathname + location.hash);
+  }
+
   api("/api/auth/me").then((me) => {
+    applyMethods(me);
+    if (authNotice) document.getElementById("lock-error").textContent = authNotice;
     if (me.authenticated) {
-      showShell();
+      showShell(me.user);
+      if (authQuery.get("linked")) toast("Account linked.");
       route();
     } else showLock();
   }).catch(() => showLock());

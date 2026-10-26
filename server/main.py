@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, plex, settings, youtube
+from . import auth, plex, settings, sso, users, youtube
 from .ffmpeg_cmd import fmp4_command, hls_remux_command, mpeg1_command
 from .streaming import StreamError, iter_ffmpeg
 
@@ -28,21 +30,37 @@ _SECRETISH = re.compile(r"(?i)(X-Plex-Token:\s*\S+|token=|[?&]X-Plex-Token=)[^\s
 
 def _public_error(exc: Exception) -> str:
     text = _SECRETISH.sub("token=***", str(exc))
-    text = re.sub(r"(?i)(password|cookie)[=:]\s*\S+", r"\1=***", text)
+    text = re.sub(r"(?i)(password|cookie|client_secret|access_token)[=:]\s*\S+", r"\1=***", text)
     return text.strip()[:500] or "Request failed"
 
 
+def current_user(conn) -> dict | None:
+    parsed = auth.parse_token(conn.cookies.get(auth.COOKIE))
+    if not parsed:
+        return None
+    return users.user_for_session(*parsed)
+
+
 def _authed(conn) -> bool:
-    return auth.token_ok(conn.cookies.get(auth.COOKIE))
+    return current_user(conn) is not None
 
 
-def require_user(request: Request) -> None:
-    if not _authed(request):
+def require_user(request: Request) -> dict:
+    user = current_user(request)
+    if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
+    return user
+
+
+def require_owner(user: dict = Depends(require_user)) -> dict:
+    if user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can change setup")
+    return user
 
 
 class LoginBody(BaseModel):
     password: str
+    username: str | None = None
 
 
 class SettingsBody(BaseModel):
@@ -51,18 +69,84 @@ class SettingsBody(BaseModel):
     default_quality: str | None = None
 
 
+class AccessBody(BaseModel):
+    users: list
+
+
+class PlexStartBody(BaseModel):
+    link_user: str | None = None
+
+
+_attempts: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _recent(key: str, window: float) -> list[float]:
+    now = time.time()
+    hits = [stamp for stamp in _attempts.get(key, []) if now - stamp < window]
+    _attempts[key] = hits
+    return hits
+
+
+def _too_many(key: str, limit: int, window: float) -> bool:
+    return len(_recent(key, window)) >= limit
+
+
+def _mark_attempt(key: str, window: float) -> None:
+    _recent(key, window).append(time.time())
+
+
+def _secure_cookie(request: Request) -> bool:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    return proto == "https"
+
+
+def _session_response(request: Request, payload: dict, user: dict | None = None, status: int = 200) -> Response:
+    response = Response(content=json.dumps(payload), media_type="application/json", status_code=status)
+    response.headers["Cache-Control"] = "no-store"
+    if user:
+        response.set_cookie(
+            auth.COOKIE,
+            auth.issue_token(user["id"], int(user.get("session_version") or 1)),
+            max_age=auth.SESSION_TTL,
+            httponly=True,
+            samesite="lax",
+            secure=_secure_cookie(request),
+            path="/",
+        )
+    return response
+
+
+def _auth_error_redirect(code: str) -> RedirectResponse:
+    allowed = {"not-allowed", "google-failed", "state", "unconfigured"}
+    if code not in allowed:
+        code = "google-failed"
+    return RedirectResponse(url=f"/?e={code}", status_code=302)
+
+
 @app.on_event("startup")
 def _startup() -> None:
     source = settings.password_source()
-    # Touch the password so a generated one exists before the first request.
     settings.load_password()
+    status = users.ensure_users()
     if source == "environment":
-        logger.info("Vela %s ready (password from environment)", settings.VERSION)
+        logger.info("Vela %s ready. Seats: %s", settings.VERSION, ", ".join(status["usernames"]))
     else:
         logger.warning(
             "APP_PASSWORD is not set. A password was written to %s — set APP_PASSWORD to replace it.",
             settings.PASSWORD_PATH,
         )
+    if status.get("hint_written"):
+        logger.warning("Grok test password is in %s", users._hint_path())
+    logger.info("Plex sign-in on. Google sign-in %s.", "on" if sso.google_enabled() else "off")
 
 
 @app.middleware("http")
@@ -85,25 +169,26 @@ async def health():
 
 @app.get("/api/auth/me")
 async def me(request: Request):
-    return {"authenticated": _authed(request), "password_source": settings.password_source()}
+    user = current_user(request)
+    body = {
+        "authenticated": bool(user),
+        "methods": {"password": True, "plex": True, "google": sso.google_enabled()},
+    }
+    if user:
+        body["user"] = users.session_public(user)
+    return body
 
 
 @app.post("/api/auth/login")
 async def login(body: LoginBody, request: Request):
-    if not auth.password_ok(body.password):
-        raise HTTPException(status_code=401, detail="Wrong password")
-    secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
-    response = Response(content='{"ok":true}', media_type="application/json")
-    response.set_cookie(
-        auth.COOKIE,
-        auth.issue_token(),
-        max_age=auth.SESSION_TTL,
-        httponly=True,
-        samesite="lax",
-        secure=secure,
-        path="/",
-    )
-    return response
+    ip = _client_ip(request)
+    if _too_many(f"login:{ip}", 10, 600):
+        raise HTTPException(status_code=429, detail="Too many attempts. Wait a few minutes.")
+    user = users.authenticate(body.username, body.password)
+    if not user:
+        _mark_attempt(f"login:{ip}", 600)
+        raise HTTPException(status_code=401, detail="Wrong username or password")
+    return _session_response(request, {"ok": True, "user": users.session_public(user)}, user)
 
 
 @app.post("/api/auth/logout")
@@ -113,18 +198,163 @@ async def logout():
     return response
 
 
+@app.post("/api/auth/plex/start")
+async def plex_start(body: PlexStartBody, request: Request):
+    if _too_many(f"plex:{_client_ip(request)}", 8, 600):
+        raise HTTPException(status_code=429, detail="Too many Plex sign-in attempts. Wait a few minutes.")
+    _mark_attempt(f"plex:{_client_ip(request)}", 600)
+    link_user = None
+    if body.link_user:
+        owner = current_user(request)
+        if not owner or owner.get("role") != "owner":
+            raise HTTPException(status_code=401, detail="Sign in as the owner before linking")
+        if body.link_user not in {users.OWNER_ID, users.TESTER_ID}:
+            raise HTTPException(status_code=400, detail="Unknown seat")
+        link_user = body.link_user
+    try:
+        started = await sso.start_pin(link_user)
+    except Exception as exc:
+        logger.info("plex pin failed: %s", _public_error(exc))
+        raise HTTPException(status_code=502, detail="Could not reach Plex sign-in") from exc
+    return started
+
+
+@app.get("/api/auth/plex/qr")
+async def plex_qr(state: str):
+    image = sso.pin_qr(state)
+    if not image:
+        raise HTTPException(status_code=404, detail="Code expired")
+    return Response(content=image, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/auth/plex/poll")
+async def plex_poll(state: str, request: Request):
+    result = await sso.poll_pin(state)
+    status = result.get("status")
+    if status == "pending":
+        return _session_response(request, {"status": "pending"})
+    if status == "expired":
+        return _session_response(request, {"status": "expired", "detail": "That code expired. Start again."})
+    if status == "error":
+        return _session_response(request, {"status": "error", "detail": result.get("detail") or "Plex sign-in failed"})
+    if status != "claimed":
+        return _session_response(request, {"status": "error", "detail": "Plex sign-in failed"})
+
+    profile = result.get("profile") or {}
+    link_user = result.get("link_user")
+    if link_user:
+        owner = current_user(request)
+        if not owner or owner.get("role") != "owner":
+            return _session_response(request, {"status": "denied", "detail": "Sign in as the owner before linking"})
+        try:
+            saved = users.remember_identity(link_user, "plex", profile)
+        except ValueError as exc:
+            return _session_response(request, {"status": "denied", "detail": str(exc)})
+        return _session_response(request, {"status": "linked", "user": users.access_public(saved)})
+
+    matched = users.match_identity("plex", profile)
+    if not matched:
+        name = profile.get("username") or "That Plex account"
+        logger.info("plex sign-in denied for %s", name)
+        return _session_response(
+            request,
+            {"status": "denied", "detail": f"{name} is not allowed. Only the owner and the Grok test seat can sign in."},
+        )
+    saved = users.remember_identity(matched["id"], "plex", profile)
+    return _session_response(request, {"status": "ok", "user": users.session_public(saved)}, saved)
+
+
+@app.get("/api/auth/google/start")
+async def google_start(request: Request, link_user: str | None = None):
+    if not sso.google_enabled():
+        return _auth_error_redirect("unconfigured")
+    link = None
+    if link_user:
+        owner = current_user(request)
+        if not owner or owner.get("role") != "owner" or link_user not in {users.OWNER_ID, users.TESTER_ID}:
+            return _auth_error_redirect("state")
+        link = link_user
+    origin = sso.external_origin(request)
+    try:
+        url = sso.begin_google(origin, link)
+    except Exception:
+        return _auth_error_redirect("unconfigured")
+    return RedirectResponse(url=url, status_code=302)
+
+
+@app.get("/api/auth/google/callback")
+async def google_callback(request: Request, code: str = "", state: str = ""):
+    payload = sso.take_google_state(state)
+    if not payload or not code:
+        return _auth_error_redirect("state")
+    origin = str(payload.get("origin") or sso.external_origin(request))
+    try:
+        profile = await sso.finish_google(code, origin)
+    except Exception as exc:
+        logger.info("google sign-in failed: %s", _public_error(exc))
+        return _auth_error_redirect("google-failed")
+    if payload.get("purpose") == "link":
+        owner = current_user(request)
+        link_user = str(payload.get("link_user") or "")
+        if not owner or owner.get("role") != "owner":
+            return _auth_error_redirect("state")
+        try:
+            users.remember_identity(link_user, "google", profile)
+        except ValueError:
+            return _auth_error_redirect("not-allowed")
+        return RedirectResponse(url="/?linked=1", status_code=302)
+    matched = users.match_identity("google", profile)
+    if not matched:
+        logger.info("google sign-in denied for %s", profile.get("email") or "unknown")
+        return _auth_error_redirect("not-allowed")
+    saved = users.remember_identity(matched["id"], "google", profile)
+    response = RedirectResponse(url="/", status_code=302)
+    response.set_cookie(
+        auth.COOKIE,
+        auth.issue_token(saved["id"], int(saved.get("session_version") or 1)),
+        max_age=auth.SESSION_TTL,
+        httponly=True,
+        samesite="lax",
+        secure=_secure_cookie(request),
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/auth/users")
+async def get_users(request: Request, _owner: dict = Depends(require_owner)):
+    origin = sso.external_origin(request)
+    return {
+        "users": users.list_access(),
+        "tester_password": users.tester_password_hint(),
+        "google": {
+            "enabled": sso.google_enabled(),
+            "redirect": sso.google_redirect(origin),
+        },
+    }
+
+
+@app.put("/api/auth/users")
+async def put_users(body: AccessBody, _owner: dict = Depends(require_owner)):
+    try:
+        saved = users.update_users(body.users)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"users": saved, "tester_password": users.tester_password_hint()}
+
+
 @app.get("/api/settings")
-async def get_settings(_user: None = Depends(require_user)):
+async def get_settings(_user: dict = Depends(require_owner)):
     return settings.public_settings()
 
 
 @app.put("/api/settings")
-async def put_settings(body: SettingsBody, _user: None = Depends(require_user)):
+async def put_settings(body: SettingsBody, _user: dict = Depends(require_owner)):
     return settings.update_settings(body.model_dump())
 
 
 @app.post("/api/youtube/cookies")
-async def upload_cookies(file: UploadFile = File(...), _user: None = Depends(require_user)):
+async def upload_cookies(file: UploadFile = File(...), _user: dict = Depends(require_owner)):
     data = await file.read(1_000_001)
     if len(data) < 16 or len(data) > 1_000_000:
         raise HTTPException(status_code=400, detail="Cookies file is empty or too large")

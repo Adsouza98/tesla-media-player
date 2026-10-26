@@ -42,6 +42,29 @@ docker compose up -d --build
 
 Open `http://<host>:8095`, sign in, then put the site behind HTTPS before using it in the car.
 
+## Who can sign in
+
+Vela has two seats and no more. Nginx Proxy Manager and Cloudflare only carry the connection. They are not the login. Sign-in is built into Vela, in the same style as Organizr's Plex login and TeslaPlay's Google login.
+
+| Seat | How they get in |
+| --- | --- |
+| Owner | Cabin password (`APP_PASSWORD`), Plex, or Google |
+| Grok test | Username `grok` plus its password, or a Plex/Google account you attach to that seat |
+
+Nobody else can get in. A Plex or Google account is refused until that seat lists the username or email. The first person to click the button is not granted access.
+
+**Plex** is the one to use in the car. The screen shows a 4-character code (and a QR). On your phone, open `plex.tv/link` and approve it. The Tesla browser never sees the Plex password, which matters when the Plex account itself is "Sign in with Google" — Google often blocks the car browser.
+
+**Password** still works. Leave the username blank for the owner cabin password. For the test seat, choose Tester sign-in and use username `grok`.
+
+**Google** is optional and meant for a laptop, not the car. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. In Settings, copy the redirect URI (`https://<your-domain>/api/auth/google/callback`) into the Google OAuth client. Set `PUBLIC_URL` to that same https origin so the redirect stays stable behind Nginx Proxy Manager.
+
+Linking is done while you are already signed in as the owner: Settings → Link Plex to this seat. You can also set `OWNER_EMAIL` and `OWNER_PLEX_USERNAME` before the first start. Those only fill empty fields. After that, Settings is in charge.
+
+If `TEST_PASSWORD` is empty, the first start writes a password to `/config/test-user` and shows it once in Settings. Treat that file like `APP_PASSWORD`.
+
+The test seat can play. It cannot change the Plex token, YouTube cookies, or the allow list.
+
 If `APP_PASSWORD` is empty, the first start writes one to `/config/generated-password`. Prefer setting the variable yourself. Read a generated password with:
 
 ```bash
@@ -116,7 +139,13 @@ Caddy terminates TLS and proxies to Vela with flushing enabled. For a real name,
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `APP_PASSWORD` | generated file | Cabin login |
+| `APP_PASSWORD` | generated file | Owner cabin password |
+| `OWNER_EMAIL` | empty | Fills the owner's Plex and Google email when those are still blank |
+| `OWNER_PLEX_USERNAME` | empty | Fills the owner's allowed Plex username when blank |
+| `TEST_USERNAME` | `grok` | Test seat username, used on first create |
+| `TEST_PASSWORD` | generated file | Test seat password. Empty writes `/config/test-user` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | empty | Optional Google sign-in |
+| `PUBLIC_URL` | request host | Public https origin, used for the Google redirect |
 | `PUID` / `PGID` | `568` | TrueNAS apps user |
 | `TZ` | `America/Toronto` | |
 | `PORT` | `8095` | Inside the container |
@@ -149,7 +178,7 @@ Node 22 or Deno must be on `PATH` for YouTube extraction outside Docker. The ima
 Published from GitHub Actions to:
 
 ```text
-ghcr.io/adsouza98/tesla-media-player:0.1.0
+ghcr.io/adsouza98/tesla-media-player:0.2.0
 ghcr.io/adsouza98/tesla-media-player:latest
 ```
 

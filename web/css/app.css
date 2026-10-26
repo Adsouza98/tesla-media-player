@@ -58,8 +58,49 @@ a { color: inherit; text-decoration: none; }
   margin: 8px 0 12px;
 }
 .lede { color: var(--muted); font-size: 18px; max-width: 42ch; }
-.lock-card form { display: grid; gap: 10px; margin-top: 28px; }
-.lock-card label { color: var(--muted); font-size: 14px; }
+.lock-card form { display: grid; gap: 10px; margin-top: 18px; }
+.lock-card label, .settings label, .seat label { color: var(--muted); font-size: 14px; }
+.lock-card input, .settings input, .seat input, .search-row input {
+  background: var(--card);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 16px 18px;
+  font-size: 18px;
+  min-height: 52px;
+}
+.lock-card input, .settings input, .seat input { width: 100%; }
+.auth-block, .lock-card form { display: grid; gap: 10px; }
+.wide { width: 100%; }
+.plex-panel {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px 0 4px;
+}
+.plex-panel img { width: 180px; height: 180px; background: white; border-radius: 12px; }
+.plex-code {
+  font-size: clamp(40px, 8vw, 72px);
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  margin: 0;
+  color: var(--amber-2);
+}
+.seat {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+.seat legend { color: var(--amber); padding: 0 6px; }
+code.secret {
+  display: inline-block;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #241910;
+  color: var(--amber-2);
+}
 select {
   background: var(--card);
   border: 1px solid rgba(255,255,255,0.08);
@@ -75,6 +116,7 @@ button, .btn {
   background: var(--card-2);
   min-height: 52px;
 }
+.btn { display: inline-flex; align-items: center; justify-content: center; text-align: center; }
 button.primary, .lock-card button[type="submit"] { background: var(--amber); color: #1a1206; font-weight: 700; }
 button.ghost { background: transparent; border: 1px solid rgba(255,255,255,0.12); }
 
@@ -90,12 +132,14 @@ button.ghost { background: transparent; border: 1px solid rgba(255,255,255,0.12)
   background: rgba(11, 13, 17, 0.92);
   backdrop-filter: blur(10px);
   z-index: 2;
+  flex-wrap: wrap;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-family: Palatino, Georgia, serif; font-size: 28px; }
 .top nav { display: flex; gap: 8px; margin-left: 12px; }
 .top nav a, .ghost { padding: 10px 16px; border-radius: 999px; color: var(--muted); }
 .top nav a.active { color: #1a1206; background: var(--amber); }
-.top #open-settings { margin-left: auto; }
+.top #open-settings, .top #sign-out { margin-left: 0; }
+.who { margin-left: auto; color: var(--muted); font-size: 14px; }
 
 main { padding: 22px; }
 footer.fine { padding: 8px 22px 18px; }
