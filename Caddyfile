@@ -1,0 +1,6 @@
+{$VELA_DOMAIN:localhost} {
+	encode gzip
+	reverse_proxy tesla-media-player:8095 {
+		flush_interval -1
+	}
+}

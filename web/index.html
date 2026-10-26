@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#0b0d11" />
+  <title>Vela</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <section id="lock" class="lock">
+    <div class="lock-card">
+      <div class="mark" aria-hidden="true"></div>
+      <p class="eyebrow">Cabin picture</p>
+      <h1>Vela</h1>
+      <p class="lede">YouTube and Plex for the passenger screen. The picture is drawn on a canvas, so it keeps playing when the car leaves Park.</p>
+      <form id="lock-form">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <button type="submit">Enter</button>
+      </form>
+      <p id="lock-error" class="error" role="alert"></p>
+      <p class="fine">Passenger use only. Video on the driver display while moving is illegal and dangerous.</p>
+    </div>
+  </section>
+
+  <div id="shell" class="shell hidden">
+    <header class="top">
+      <a class="brand" href="#/">
+        <span class="mark sm" aria-hidden="true"></span>
+        <span>Vela</span>
+      </a>
+      <nav>
+        <a href="#/youtube" data-nav="youtube">YouTube</a>
+        <a href="#/plex" data-nav="plex">Plex</a>
+      </nav>
+      <button id="open-settings" class="ghost" type="button">Settings</button>
+    </header>
+    <main id="view"></main>
+    <footer class="fine">Passenger use only. Not for the driver while the car is moving.</footer>
+  </div>
+
+  <section id="player" class="player hidden" aria-label="Player">
+    <canvas id="stage"></canvas>
+    <div id="player-shade" class="shade">
+      <header class="player-top">
+        <button id="player-back" class="ghost" type="button">Back</button>
+        <div>
+          <p id="player-kicker" class="eyebrow"></p>
+          <h2 id="player-title"></h2>
+        </div>
+        <button id="player-compat" class="ghost" type="button">Compatibility</button>
+      </header>
+      <div id="player-status" class="status"></div>
+      <footer class="dock">
+        <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek" />
+        <div class="dock-row">
+          <button id="skip-back" type="button">−15</button>
+          <button id="play-toggle" class="primary" type="button">Pause</button>
+          <button id="skip-fwd" type="button">+30</button>
+          <span id="clock" class="clock">0:00</span>
+          <div class="qualities" id="qualities"></div>
+          <label class="volume">Vol
+            <input id="volume" type="range" min="0" max="100" value="90" />
+          </label>
+        </div>
+      </footer>
+    </div>
+  </section>
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="/js/vendor/mp4box.all.min.js"></script>
+  <script src="/js/vendor/jsmpeg.min.js"></script>
+  <script src="/js/player.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

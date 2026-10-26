@@ -1,0 +1,49 @@
+services:
+  tesla-media-player:
+    image: ghcr.io/adsouza98/tesla-media-player:0.1.0
+    build: .
+    container_name: tesla-media-player
+    restart: unless-stopped
+    ports:
+      - "8095:8095"
+    environment:
+      PUID: "568"
+      PGID: "568"
+      TZ: America/Toronto
+      PORT: "8095"
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      PLEX_URL: ${PLEX_URL:-}
+      PLEX_TOKEN: ${PLEX_TOKEN:-}
+      DEFAULT_QUALITY: ${DEFAULT_QUALITY:-1080}
+      YOUTUBE_COOKIES: /config/youtube-cookies.txt
+      CONFIG_DIR: /config
+    volumes:
+      - ./config:/config
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Optional. On the homelab, prefer the existing Nginx Proxy Manager.
+  # docker compose --profile https up -d
+  caddy:
+    image: caddy:2.10.2
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      VELA_DOMAIN: ${VELA_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - tesla-media-player
+
+volumes:
+  caddy-data:
+  caddy-config:
