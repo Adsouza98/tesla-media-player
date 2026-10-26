@@ -12,8 +12,8 @@ services:
       TZ: America/Toronto
       PORT: "8095"
       APP_PASSWORD: ${APP_PASSWORD:-}
-      OWNER_NAME: ${OWNER_NAME:-Andre}
-      OWNER_USERNAME: ${OWNER_USERNAME:-andre}
+      OWNER_NAME: ${OWNER_NAME:-JuniorChange}
+      OWNER_USERNAME: ${OWNER_USERNAME:-juniorchange}
       OWNER_EMAIL: ${OWNER_EMAIL:-}
       OWNER_PLEX_USERNAME: ${OWNER_PLEX_USERNAME:-}
       TEST_USERNAME: ${TEST_USERNAME:-grok}

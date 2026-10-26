@@ -101,8 +101,8 @@ def ensure_users() -> dict:
     users = data.get("users")
     changed = not isinstance(users, list)
     if not isinstance(users, list):
-        owner_name = _env("OWNER_NAME") or "Andre"
-        owner_user = clean_username(_env("OWNER_USERNAME")) or "andre"
+        owner_name = _env("OWNER_NAME") or "JuniorChange"
+        owner_user = clean_username(_env("OWNER_USERNAME")) or "juniorchange"
         tester_name = _env("TEST_NAME") or "Grok"
         tester_user = clean_username(_env("TEST_USERNAME")) or "grok"
         if tester_user == owner_user:
@@ -114,8 +114,8 @@ def ensure_users() -> dict:
         data = {"users": users}
     by_id = {user.get("id"): user for user in users if isinstance(user, dict)}
     if OWNER_ID not in by_id or TESTER_ID not in by_id:
-        owner_name = _env("OWNER_NAME") or "Andre"
-        owner_user = clean_username(_env("OWNER_USERNAME")) or "andre"
+        owner_name = _env("OWNER_NAME") or "JuniorChange"
+        owner_user = clean_username(_env("OWNER_USERNAME")) or "juniorchange"
         tester_name = _env("TEST_NAME") or "Grok"
         tester_user = clean_username(_env("TEST_USERNAME")) or "grok"
         if tester_user == owner_user:
@@ -128,7 +128,7 @@ def ensure_users() -> dict:
     owner = by_id[OWNER_ID]
     tester = by_id[TESTER_ID]
     for user, template in (
-        (owner, _blank(OWNER_ID, "Andre", "andre", "owner")),
+        (owner, _blank(OWNER_ID, "JuniorChange", "juniorchange", "owner")),
         (tester, _blank(TESTER_ID, "Grok", "grok", "tester")),
     ):
         for key, value in template.items():
