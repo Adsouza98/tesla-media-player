@@ -1,4 +1,4 @@
-FROM python:3.12-bookworm-slim
+FROM python:3.12-slim-bookworm
 
 # Deno is yt-dlp's default JavaScript runtime for YouTube's solver.
 ARG DENO_VERSION=2.9.8
